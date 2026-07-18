@@ -2,9 +2,9 @@
 from typing import Dict, List, Optional
 from .models import Company, Financials, Multipliers
 
-class KlechevScorer:
+class AlphaScorer:
     """
-    Индекс Клещёва — оценка инвестиционной привлекательности акций.
+    Alpha MOEX Scorer — оценка инвестиционной привлекательности акций.
     Рейтинг от 0 до 1000 баллов.
     """
    

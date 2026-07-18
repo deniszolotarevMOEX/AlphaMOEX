@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from ..engine.scoring.scorer import KlechevScorer
+from ..engine.scoring.scorer import AlphaScorer
 from ..engine.scoring.data import (
     VSYDP_COMPANY, VSYDP_FINANCIALS, VSYDP_MULTIPLIERS,
     GCHE_COMPANY, GCHE_FINANCIALS, GCHE_MULTIPLIERS,
@@ -23,7 +23,7 @@ class MainWindow(QMainWindow):
         self.setGeometry(100, 100, 1200, 700)
        
         # Создаём скоринг-модель
-        self.scorer = KlechevScorer()
+        self.scorer = AlphaScorer()
        
         # Данные для таблицы (тестовые)
         self.companies = [
@@ -69,32 +69,29 @@ class MainWindow(QMainWindow):
        
         # Создаём интерфейс
         self._setup_ui()
+        print(f"🟢 Инициализация завершена. Компаний: {len(self.companies)}, Результатов: {len(self.results)}")
    
     def _setup_ui(self):
         """Создаёт виджеты интерфейса"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-       
+        
         # Главный горизонтальный сплиттер
         main_splitter = QSplitter(Qt.Horizontal)
        
         # Левая панель — таблица акций
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels([
-            "Тикер", "Компания", "Рейтинг", "Оценка", "Решение"
+            "Тикер", "Компания", "Цена", "P/E", "P/B", "Рейтинг", "Оценка", "Решение"
         ])
-        self.table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeToContents
-        )
-        self.table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.Stretch
-        )
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setSortingEnabled(True)  # <-- СОРТИРОВКА ВКЛЮЧЕНА
         self.table.itemSelectionChanged.connect(self._on_select_company)
-       
-        # Заполняем таблицу
+        
         self._populate_table()
        
         # Правая панель — карточка компании
@@ -128,14 +125,25 @@ class MainWindow(QMainWindow):
     def _populate_table(self):
         """Заполняет таблицу данными"""
         self.table.setRowCount(len(self.results))
-       
+        
         for i, item in enumerate(self.results):
             result = item['result']
             ticker = item['ticker']
             name = item['name']
             total = result['total']
             grade = result['grade']
-           
+            
+            # Находим цену, P/E и P/B
+            price = 0.0
+            pe = None
+            pb = None
+            for comp in self.companies:
+                if comp['ticker'] == ticker:
+                    price = comp['multipliers'].price
+                    pe = comp['multipliers'].pe
+                    pb = comp['multipliers'].pb
+                    break
+            
             # Решение
             if total >= 900:
                 solution = "🟢 Покупать"
@@ -145,12 +153,19 @@ class MainWindow(QMainWindow):
                 solution = "🟠 Наблюдать"
             else:
                 solution = "🔴 Избегать"
-           
+            
+            # Форматируем P/E и P/B
+            pe_text = f"{pe:.2f}" if pe is not None else "—"
+            pb_text = f"{pb:.2f}" if pb is not None else "—"
+            
             self.table.setItem(i, 0, QTableWidgetItem(ticker))
             self.table.setItem(i, 1, QTableWidgetItem(name))
-            self.table.setItem(i, 2, QTableWidgetItem(str(total)))
-            self.table.setItem(i, 3, QTableWidgetItem(grade))
-            self.table.setItem(i, 4, QTableWidgetItem(solution))
+            self.table.setItem(i, 2, QTableWidgetItem(f"{price:.2f}"))
+            self.table.setItem(i, 3, QTableWidgetItem(pe_text))
+            self.table.setItem(i, 4, QTableWidgetItem(pb_text))
+            self.table.setItem(i, 5, QTableWidgetItem(str(total)))
+            self.table.setItem(i, 6, QTableWidgetItem(grade))
+            self.table.setItem(i, 7, QTableWidgetItem(solution))
    
     def _on_select_company(self):
         """При выборе строки показывает карточку компании"""
@@ -186,5 +201,90 @@ class MainWindow(QMainWindow):
         self.details_text.setText(details)
    
     def _refresh(self):
-        """Обновляет данные (пока заглушка)"""
-        self.details_text.setText("🔄 Данные обновляются...")
+        """Обновляет данные с диагностикой"""
+        self.details_text.setText("🔄 Загрузка данных...")
+        
+        from ..engine.data_loader import DataManager
+        manager = DataManager()
+        data_result = manager.refresh_all_data()
+        
+        if data_result['status'] != 'success':
+            self.details_text.setText(f"❌ Ошибка: {data_result.get('message')}")
+            return
+        
+        loaded_companies = data_result['companies']
+        # ⬇️ ДИАГНОСТИКА: печатаем первые 3 компании с P/E и P/B
+        print("\n" + "="*60)
+        print("🐞 ДИАГНОСТИКА: P/E и P/B из data_loader")
+        print("="*60)
+        for i, item in enumerate(loaded_companies[:3]):
+            print(f"[{i+1}] {item['ticker']} — P/E: {item.get('pe')}, P/B: {item.get('pb')}")
+        print("="*60 + "\n")
+        if not loaded_companies:
+            self.details_text.setText("⚠️ Данные не загружены")
+            return
+        
+        # Перестраиваем self.companies
+        new_companies = []
+        for item in loaded_companies:
+            ticker = item['ticker']
+            old_item = next((c for c in self.companies if c['ticker'] == ticker), None)
+            
+            if old_item:
+                company = old_item['company']
+                financials = item.get('financials') or old_item['financials']
+                multipliers = old_item['multipliers']
+                multipliers.price = item['price']
+                # ⬇️ КРИТИЧЕСКИ ВАЖНО: обновляем P/E и P/B
+                multipliers.pe = item.get('pe')
+                multipliers.pb = item.get('pb')
+                
+                new_companies.append({
+                    'ticker': ticker,
+                    'company': company,
+                    'financials': financials,
+                    'multipliers': multipliers,
+                })
+            else:
+                from ..engine.scoring.models import Company, Financials, Multipliers
+                company = Company(ticker=ticker, name=item['name'], sector='N/A')
+                financials = item.get('financials') or Financials(ticker=ticker)
+                multipliers = Multipliers(
+                    ticker=ticker,
+                    price=item['price'],
+                    pe=item.get('pe'),
+                    pb=item.get('pb'),
+                )
+                new_companies.append({
+                    'ticker': ticker,
+                    'company': company,
+                    'financials': financials,
+                    'multipliers': multipliers,
+                })
+        
+        self.companies = new_companies
+        
+                # ⬇️ ДИАГНОСТИКА: проверяем, что в self.companies есть P/E и P/B
+        print("\n" + "="*60)
+        print("🐞 ДИАГНОСТИКА: self.companies после обновления")
+        print("="*60)
+        for i, comp in enumerate(self.companies[:3]):
+            print(f"[{i+1}] {comp['ticker']} — P/E: {comp['multipliers'].pe}, P/B: {comp['multipliers'].pb}")
+        print("="*60 + "\n")
+        
+        # Пересчитываем рейтинги
+        self.results = []
+        for item in self.companies:
+            result = self.scorer.score_company(
+                company=item['company'],
+                financials=item['financials'],
+                multipliers=item['multipliers']
+            )
+            self.results.append({
+                'ticker': item['ticker'],
+                'name': item['company'].name,
+                'result': result
+            })
+        
+        self._populate_table()
+        self.details_text.setText(f"✅ Данные обновлены! ({len(self.companies)} компаний)")
